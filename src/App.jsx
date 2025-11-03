@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import './App.css'
+import { supabase } from './lib/supabase'
 
 function App() {
   const [goals, setGoals] = useState([])
@@ -7,6 +8,7 @@ function App() {
   const [editingId, setEditingId] = useState(null)
   const [editingText, setEditingText] = useState('')
   const [expandedHistoryId, setExpandedHistoryId] = useState(null)
+  const [loading, setLoading] = useState(true)
 
   // 날짜 포맷팅 함수
   const formatDate = (isoString) => {
@@ -25,36 +27,70 @@ function App() {
     setExpandedHistoryId(expandedHistoryId === id ? null : id)
   }
 
-  // localStorage에서 목표 불러오기
+  // Supabase에서 목표 불러오기
   useEffect(() => {
-    const savedGoals = localStorage.getItem('saruru-goals')
-    if (savedGoals) {
-      setGoals(JSON.parse(savedGoals))
-    }
+    fetchGoals()
   }, [])
 
-  // 목표 변경시 localStorage에 저장
-  useEffect(() => {
-    localStorage.setItem('saruru-goals', JSON.stringify(goals))
-  }, [goals])
+  const fetchGoals = async () => {
+    try {
+      setLoading(true)
+      const { data, error } = await supabase
+        .from('goals')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+
+      setGoals(data || [])
+    } catch (error) {
+      console.error('목표 불러오기 실패:', error)
+      alert('목표를 불러오는데 실패했습니다.')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   // 목표 추가
-  const addGoal = () => {
+  const addGoal = async () => {
     if (newGoal.trim()) {
-      const goal = {
-        id: Date.now(),
-        text: newGoal,
-        createdAt: new Date().toISOString(),
-        editHistory: []
+      try {
+        const goal = {
+          id: Date.now(),
+          text: newGoal,
+          edit_history: []
+        }
+
+        const { error } = await supabase
+          .from('goals')
+          .insert([goal])
+
+        if (error) throw error
+
+        setNewGoal('')
+        fetchGoals()
+      } catch (error) {
+        console.error('목표 추가 실패:', error)
+        alert('목표를 추가하는데 실패했습니다.')
       }
-      setGoals([...goals, goal])
-      setNewGoal('')
     }
   }
 
   // 목표 삭제
-  const deleteGoal = (id) => {
-    setGoals(goals.filter(goal => goal.id !== id))
+  const deleteGoal = async (id) => {
+    try {
+      const { error } = await supabase
+        .from('goals')
+        .delete()
+        .eq('id', id)
+
+      if (error) throw error
+
+      fetchGoals()
+    } catch (error) {
+      console.error('목표 삭제 실패:', error)
+      alert('목표를 삭제하는데 실패했습니다.')
+    }
   }
 
   // 수정 시작
@@ -64,23 +100,33 @@ function App() {
   }
 
   // 수정 저장
-  const saveEdit = () => {
-    setGoals(goals.map(goal => {
-      if (goal.id === editingId) {
-        const historyEntry = {
-          previousText: goal.text,
-          editedAt: new Date().toISOString()
-        }
-        return {
-          ...goal,
-          text: editingText,
-          editHistory: [...(goal.editHistory || []), historyEntry]
-        }
+  const saveEdit = async () => {
+    try {
+      const goal = goals.find(g => g.id === editingId)
+      if (!goal) return
+
+      const historyEntry = {
+        previousText: goal.text,
+        editedAt: new Date().toISOString()
       }
-      return goal
-    }))
-    setEditingId(null)
-    setEditingText('')
+
+      const { error } = await supabase
+        .from('goals')
+        .update({
+          text: editingText,
+          edit_history: [...(goal.edit_history || []), historyEntry]
+        })
+        .eq('id', editingId)
+
+      if (error) throw error
+
+      setEditingId(null)
+      setEditingText('')
+      fetchGoals()
+    } catch (error) {
+      console.error('목표 수정 실패:', error)
+      alert('목표를 수정하는데 실패했습니다.')
+    }
   }
 
   // 수정 취소
@@ -108,7 +154,9 @@ function App() {
 
       {/* 목표 목록 */}
       <div className="goals-list">
-        {goals.length === 0 ? (
+        {loading ? (
+          <p className="empty-message">로딩 중...</p>
+        ) : goals.length === 0 ? (
           <p className="empty-message">아직 목표가 없습니다. 첫 목표를 추가해보세요!</p>
         ) : (
           goals.map(goal => (
@@ -131,13 +179,13 @@ function App() {
                   <div className="view-mode">
                     <div className="goal-content">
                       <span className="goal-text">{goal.text}</span>
-                      <span className="goal-date">생성일: {formatDate(goal.createdAt)}</span>
-                      {goal.editHistory && goal.editHistory.length > 0 && (
+                      <span className="goal-date">생성일: {formatDate(goal.created_at)}</span>
+                      {goal.edit_history && goal.edit_history.length > 0 && (
                         <button
                           className="history-toggle"
                           onClick={() => toggleHistory(goal.id)}
                         >
-                          {expandedHistoryId === goal.id ? '히스토리 숨기기' : `수정 히스토리 (${goal.editHistory.length})`}
+                          {expandedHistoryId === goal.id ? '히스토리 숨기기' : `수정 히스토리 (${goal.edit_history.length})`}
                         </button>
                       )}
                     </div>
@@ -148,10 +196,10 @@ function App() {
                   </div>
 
                   {/* 수정 히스토리 */}
-                  {expandedHistoryId === goal.id && goal.editHistory && goal.editHistory.length > 0 && (
+                  {expandedHistoryId === goal.id && goal.edit_history && goal.edit_history.length > 0 && (
                     <div className="edit-history">
                       <h4>수정 히스토리</h4>
-                      {goal.editHistory.map((entry, index) => (
+                      {goal.edit_history.map((entry, index) => (
                         <div key={index} className="history-entry">
                           <div className="history-date">{formatDate(entry.editedAt)}</div>
                           <div className="history-text">이전 내용: {entry.previousText}</div>
